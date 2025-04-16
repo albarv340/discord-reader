@@ -15,9 +15,9 @@
   `;
 
   const VOICE_SPEED_MIN = 0.5;
-  const VOICE_SPEED_MAX = 2;
-  const VOICE_SPEED_STEP = 0.1;
-  const VOICE_SPEED_DEFAULT = 1;
+  const VOICE_SPEED_MAX = 10;
+  const VOICE_SPEED_STEP = 0.5;
+  const VOICE_SPEED_DEFAULT = 2;
 
   // --- State --- 
   const readingQueue = [];
@@ -68,44 +68,101 @@
     panel.style.display = 'none';
   };
 
-  // --- Queue Building Logic ---
-  const buildQueueFrom = (startElement) => {
-    readingQueue.length = 0;
-    let current = startElement;
-    let lastUsername = null;
-    let lastAvatar = null;
-    let previousUsernameForSpeech = null;
+  const shortenURLsInText = (text) => {
+    const urlRegex = /\bhttps?:\/\/[^\s]+/gi;
+  
+    return text.replace(urlRegex, (url) => {
+      try {
+        const { hostname } = new URL(url);
+        return hostname;
+      } catch (e) {
+        return url; // fallback to original if URL parsing fails
+      }
+    });
+  };
+  
 
-    while (current) {
-      const usernameElem = current.querySelector('[id^="message-username"]');
-      const messageElem = current.querySelector('[id^="message-content"]:not([class^="repliedText"])');
+  // Helper function to extract message details from an element
+const extractMessageDetails = (node, lastUsername, lastAvatar, previousUsernameForSpeech) => {
+  const usernameElem = node.querySelector('[id^="message-username"]');
+  const messageElem = node.querySelector('[id^="message-content"]:not([class^="repliedText"])');
+  const avatarElem = node.querySelector('img[aria-hidden="true"]');
 
-      const username = usernameElem ? usernameElem.textContent.trim() : lastUsername;
-      const message = messageElem ? messageElem.textContent.trim() : null;
+  const username = usernameElem ? usernameElem.textContent.trim() : lastUsername;
+  const message = messageElem ? messageElem.textContent.trim() : null;
+  const avatarSrc = avatarElem ? avatarElem.src : lastAvatar;
 
-      const avatarElem = current.querySelector('img[aria-hidden="true"]');
-      const avatarSrc = avatarElem ? avatarElem.src : lastAvatar;
+  const needsUsername = username !== previousUsernameForSpeech;
+  return { username, message, avatarSrc, needsUsername };
+};
 
-      if (message) {
-        lastUsername = username || lastUsername;
-        lastAvatar = avatarSrc || lastAvatar;
+// Function to add a message to the reading queue
+const addToQueue = (element, username, message, avatarSrc, needsUsername) => {
+  const shortenedMessage = shortenURLsInText(message);
+  const text = needsUsername && username
+    ? `${username} says: ${shortenedMessage}`
+    : shortenedMessage;
 
-        const needsUsername = username !== previousUsernameForSpeech;
-        const text = needsUsername && username ? `${username} says: ${message}` : message;
+  readingQueue.push({
+    element,
+    text,
+    username,
+    avatar: avatarSrc
+  });
+};
 
-        readingQueue.push({
-          element: current,
-          text,
-          username,
-          avatar: avatarSrc
-        });
+// Function to build queue from the start element
+const buildQueueFrom = (startElement) => {
+  readingQueue.length = 0;
+  let current = startElement;
+  let lastUsername = null;
+  let lastAvatar = null;
+  let previousUsernameForSpeech = null;
+
+  while (current) {
+    const { username, message, avatarSrc, needsUsername } = extractMessageDetails(current, lastUsername, lastAvatar, previousUsernameForSpeech);
+
+    if (message) {
+      lastUsername = username || lastUsername;
+      lastAvatar = avatarSrc || lastAvatar;
+
+      addToQueue(current, username, message, avatarSrc, needsUsername);
+    }
+
+    previousUsernameForSpeech = username;
+    current = current.nextElementSibling;
+  }
+};
+
+// MutationObserver callback to handle newly added messages
+const observer = new MutationObserver((mutations) => {
+  let lastUsername = null;
+  let lastAvatar = null;
+  let previousUsernameForSpeech = null;
+
+  mutations.forEach((mutation) => {
+    mutation.addedNodes.forEach((node) => {
+      if (node.nodeType === 1) {  // Ensure the node is an element
+        const { username, message, avatarSrc, needsUsername } = extractMessageDetails(node, lastUsername, lastAvatar, previousUsernameForSpeech);
+
+        if (message) {
+          lastUsername = username || lastUsername;
+          lastAvatar = avatarSrc || lastAvatar;
+
+          addToQueue(node, username, message, avatarSrc, needsUsername);
+        }
 
         previousUsernameForSpeech = username;
       }
+    });
+  });
+});
 
-      current = current.nextElementSibling;
-    }
-  };
+observer.observe(document.body, {
+  childList: true,
+  subtree: true
+});
+  
 
   // --- Speech Synthesis Logic ---
   const speakNext = () => {
@@ -124,6 +181,8 @@
     }
 
     updatePanelUI(username, avatar);
+
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
     utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = speechRate;
@@ -176,6 +235,7 @@
       </label>
     </div>
   `;
+  panel.setAttribute('draggable', true);
 
   document.body.appendChild(panel);
 
@@ -183,6 +243,28 @@
   const readerAvatar = panel.querySelector('#reader-avatar');
   const progressBar = panel.querySelector('#reader-progress');
   const progressNumber = panel.querySelector('#progress-number');
+
+  // --- Dragging Logic ---
+  panel.addEventListener('dragstart', function (e) {
+    const style = window.getComputedStyle(panel);
+    e.dataTransfer.setData("text/plain",
+      (parseInt(style.left, 10) - e.clientX) + ',' + (parseInt(style.top, 10) - e.clientY));
+  }, false);
+
+  document.body.addEventListener('dragover', e => {
+    e.preventDefault();
+    return false;
+  }, false);
+
+  document.body.addEventListener('drop', function (e) {
+    const offset = e.dataTransfer.getData("text/plain").split(',');
+    panel.style.left = (e.clientX + parseInt(offset[0], 10)) + 'px';
+    panel.style.top = (e.clientY + parseInt(offset[1], 10)) + 'px';
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+    e.preventDefault();
+    return false;
+  }, false);
 
   // --- Controls Setup ---
   panel.querySelector('#reader-play').addEventListener('click', () => {
