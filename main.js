@@ -204,13 +204,23 @@ observer.observe(document.body, {
     updateProgress();
   };
 
-  const loadVoices = () => {
-    voices = synth.getVoices();
+  const loadVoices = (language = 'en-US') => {
+    let voices = synth.getVoices();
+    
     if (!voices.length) {
       synth.onvoiceschanged = () => {
         voices = synth.getVoices();
+        filterVoices(voices, language);
       };
+    } else {
+      filterVoices(voices, language);
     }
+  };
+
+  // Function to filter voices based on language
+  const filterVoices = (voices, language) => {
+    const filteredVoices = voices.filter(voice => voice.lang.startsWith(language));
+    console.log(filteredVoices);
   };
 
   // --- UI Panel Setup ---
